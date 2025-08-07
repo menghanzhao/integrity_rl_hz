@@ -55,6 +55,8 @@ class LDPMaintenanceEnv:
     
     def is_outage(self, line):
         outage_list = self.outage_schedule[f'{line} outage list']
+        # if the spool of a particular line is in fature list, then it is in outage
+        
         return self.simulation_date in outage_list.values
     
     def calculate_projected_thickness(self, spool_idx, relative_quadrant, noh):
@@ -146,12 +148,14 @@ class LDPMaintenanceEnv:
             # Extract line from spool name and add all spools from that line
             if '1' in failed_spool:  # Line 1 failure
                 for spool in self.spools:
-                    if '1' in spool and spool not in valid_spools:
+                    if '1' in spool and spool not in valid_spools and spool not in self.failures:
                         valid_spools.append(spool)
             elif '2' in failed_spool:  # Line 2 failure
                 for spool in self.spools:
-                    if '2' in spool and spool not in valid_spools:
+                    if '2' in spool and spool not in valid_spools and spool not in self.failures:
                         valid_spools.append(spool)
+
+        self.failures = set()
         
         return valid_spools
 
@@ -188,15 +192,7 @@ class LDPMaintenanceEnv:
     
     def step(self, actions):
         reward = 0
-        
-        # Check if actions can be taken today
-        valid_actions = self.get_valid_actions_for_day()
-        
-        # Apply only valid actions
-        for spool, action in actions.items():
-            if spool in valid_actions and action != 0:  # 0 = do nothing
-                reward += self.apply_action(spool, action)
-        
+
         # Advance simulation by one day
         self.simulation_date += timedelta(days=1)
         
@@ -211,6 +207,14 @@ class LDPMaintenanceEnv:
         penalty = self.get_both_down_penalty()
         reward += penalty
         
+        # Check if actions can be taken today
+        valid_actions = self.get_valid_actions_for_day()
+        
+        # Apply only valid actions
+        for spool, action in actions.items():
+            if spool in valid_actions and action != 0:  # 0 = do nothing
+                reward += self.apply_action(spool, action)
+        
         # Update total reward
         self.total_reward += reward
         
@@ -223,8 +227,12 @@ class LDPMaintenanceEnv:
     def apply_failure(self, spool):
         """Apply failure effects and return associated cost"""
         # Failure takes 1 day of repair and causes 1 day outage
-        return -1000  # Basic failure cost
-    
+        # when failed, spool needs to be replaced, change thickness to nominal
+        spool_idx = self.spool_to_idx[spool]
+        self.thickness_array[spool_idx, :] = 20.6  # Reset
+        # self.failures.remove(spool)  # Remove from failures
+        return -23000 - 1000  # Basic failure cost
+
     def reset(self):
         """Reset environment to initial state"""
         self.simulation_date = datetime(2025, 1, 1)
