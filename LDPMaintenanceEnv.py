@@ -36,9 +36,9 @@ class LDPMaintenanceEnv:
         self.total_reward = 0
         
         # Pre-compute failure functions
-        self.bottom_failure_prob_func = weibull_failure_probability(0.1, 20.6)
-        self.left_right_failure_prob_func = weibull_failure_probability(0.2, 20.6)
-        self.top_failure_prob_func = weibull_failure_probability(0.3, 20.6)
+        self.bottom_failure_prob_func = weibull_failure_probability(1, 20.6)
+        self.left_right_failure_prob_func = weibull_failure_probability(1.5, 20.6)
+        self.top_failure_prob_func = weibull_failure_probability(2, 20.6)
 
     def get_state(self):
         # Convert back to DataFrame format for compatibility
