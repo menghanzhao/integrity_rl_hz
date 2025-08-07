@@ -31,7 +31,7 @@ def main():
         print("-" * 40)
         
         from train_agent import train_agent
-        agent, episode_rewards = train_agent(config_file, n_episodes=1000)
+        agent, episode_rewards = train_agent(config_file, n_episodes=100)
         
         print(f"Training completed. Final average reward: {sum(episode_rewards[-100:]) / 100:.2f}")
         

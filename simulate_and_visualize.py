@@ -54,7 +54,7 @@ def simulate_5_years(agent_path, config_file, save_results=True):
         simulation_data['cumulative_rewards'].append(cumulative_reward)
         simulation_data['failures'].append(len(env.failures))
         simulation_data['actions_taken'].append(sum(1 for a in actions.values() if a != 0))
-        simulation_data['thickness_history'].append(env.thickness.copy())
+        simulation_data['thickness_history'].append(env.thickness_array.copy())
         simulation_data['valid_action_days'].append(len(valid_spools) > 0)
         
         state = next_state
@@ -163,8 +163,9 @@ def create_visualizations(results_df, simulation_data):
     # 8. Thickness Evolution (Average across all spools)
     plt.subplot(3, 3, 8)
     avg_thickness_over_time = []
-    for thickness_df in simulation_data['thickness_history'][::30]:  # Sample every 30 days
-        avg_thickness = thickness_df[['Quadrant 1', 'Quadrant 2', 'Quadrant 3', 'Quadrant 4']].mean().mean()
+    for thickness_array in simulation_data['thickness_history'][::30]:  # Sample every 30 days
+        # thickness_array is now a numpy array [spool_idx, quadrant]
+        avg_thickness = thickness_array.mean()
         avg_thickness_over_time.append(avg_thickness)
     
     sample_dates = results_df['date'][::30][:len(avg_thickness_over_time)]
@@ -208,8 +209,9 @@ def create_detailed_analysis(results_df, simulation_data):
         
         # Sample thickness data every 30 days
         thickness_over_time = []
-        for thickness_df in simulation_data['thickness_history'][::30]:
-            avg_thickness = thickness_df[quadrant].mean()
+        for thickness_array in simulation_data['thickness_history'][::30]:
+            # thickness_array is [spool_idx, quadrant_idx] - get average for this quadrant
+            avg_thickness = thickness_array[:, i].mean()  # i is the quadrant index (0-3)
             thickness_over_time.append(avg_thickness)
         
         sample_dates = results_df['date'][::30][:len(thickness_over_time)]
@@ -225,6 +227,71 @@ def create_detailed_analysis(results_df, simulation_data):
     plt.savefig('thickness_analysis.png', dpi=300, bbox_inches='tight')
     plt.show()
     
+    # Create individual spool thickness charts
+    create_individual_spool_charts(results_df, simulation_data)
+    
+def create_individual_spool_charts(results_df, simulation_data):
+    """Create detailed thickness charts for each spool across all quadrants"""
+    
+    # Get environment to access spool information
+    from LDPMaintenanceEnv import LDPMaintenanceEnv
+    env = LDPMaintenanceEnv("RL work scope.xlsx")
+    
+    # Sample data every 30 days for better performance
+    sample_indices = range(0, len(simulation_data['thickness_history']), 30)
+    sample_dates = [results_df['date'].iloc[i] for i in sample_indices if i < len(results_df)]
+    
+    quadrant_names = ['Top', 'Right', 'Bottom', 'Left']
+    colors = ['red', 'blue', 'green', 'orange']
+    
+    # Create 4 separate figures (one for each quadrant)
+    for q_idx, (quad_name, color) in enumerate(zip(quadrant_names, colors)):
+        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+        fig.suptitle(f'{quad_name} Quadrant Thickness Over 5 Years - All Spools', fontsize=16, fontweight='bold')
+        
+        # Plot each spool's thickness for this quadrant
+        for spool_idx, spool in enumerate(env.spools):
+            ax = axes[spool_idx // 2, spool_idx % 2]
+            
+            # Extract thickness data for this spool and quadrant
+            thickness_data = []
+            for i in sample_indices:
+                if i < len(simulation_data['thickness_history']):
+                    thickness_array = simulation_data['thickness_history'][i]
+                    thickness_data.append(thickness_array[spool_idx, q_idx])
+            
+            # Truncate dates to match data length
+            plot_dates = sample_dates[:len(thickness_data)]
+            
+            # Plot the thickness evolution
+            ax.plot(plot_dates, thickness_data, color=color, linewidth=2, alpha=0.8)
+            ax.set_title(f'Spool {spool}', fontweight='bold')
+            ax.set_xlabel('Date')
+            ax.set_ylabel('Thickness (mm)')
+            ax.grid(True, alpha=0.3)
+            
+            # Add critical threshold line
+            ax.axhline(y=1.0, color='red', linestyle='--', alpha=0.7, label='Critical (1mm)')
+            ax.axhline(y=5.0, color='orange', linestyle='--', alpha=0.5, label='Warning (5mm)')
+            
+            # Set y-axis limits for better visibility
+            ax.set_ylim(0, max(25, max(thickness_data) * 1.1))
+            
+            # Add legend only to first subplot
+            if spool_idx == 0:
+                ax.legend()
+            
+            # Format x-axis dates
+            ax.tick_params(axis='x', rotation=45)
+        
+        plt.tight_layout()
+        plt.savefig(f'spool_thickness_{quad_name.lower()}_quadrant.png', dpi=300, bbox_inches='tight')
+        plt.show()
+    
+    print(f"\nGenerated individual spool thickness charts:")
+    for quad_name in quadrant_names:
+        print(f"- spool_thickness_{quad_name.lower()}_quadrant.png")
+
     # Performance summary
     print("\n" + "="*80)
     print("5-YEAR SIMULATION PERFORMANCE SUMMARY")

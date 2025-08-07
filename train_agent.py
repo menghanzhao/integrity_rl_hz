@@ -14,7 +14,11 @@ class QLearningAgent:
         self.alpha = alpha
         self.gamma = gamma
         self.epsilon = epsilon
-        self.q_table = defaultdict(lambda: defaultdict(float))
+        self.q_table = defaultdict(self._create_action_dict)
+    
+    def _create_action_dict(self):
+        """Create a new defaultdict for action values - picklable alternative to lambda"""
+        return defaultdict(float)
         
     def get_state_key(self, state):
         """Convert state to a hashable key"""

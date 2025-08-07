@@ -9,8 +9,12 @@ class LDPMaintenanceEnv:
     def __init__(self, config_file_path):
         # Read data once and convert to efficient formats
         thickness_df = pd.read_excel(config_file_path, sheet_name="current thickness", header=0)
-        self.outage_schedule = pd.read_excel(config_file_path, sheet_name="outage schedule", header=0)
+        outage_df = pd.read_excel(config_file_path, sheet_name="outage schedule", header=0)
         self.erosion_rate = np.array(pd.read_excel(config_file_path, sheet_name="erosion rate", header=0)['erosion rate (mm/1000NOH)'])
+        
+        # Convert outage schedule to sets for O(1) lookup
+        self.l1_outages = set(pd.to_datetime(outage_df['L1 outage list']).dropna())
+        self.l2_outages = set(pd.to_datetime(outage_df['L2 outage list']).dropna())
         
         # Convert thickness data to efficient numpy arrays and dictionaries
         self.spools = thickness_df['Spool'].unique()
@@ -54,10 +58,12 @@ class LDPMaintenanceEnv:
         }
     
     def is_outage(self, line):
-        outage_list = self.outage_schedule[f'{line} outage list']
-        # if the spool of a particular line is in fature list, then it is in outage
-        
-        return self.simulation_date in outage_list.values
+        # Use pre-computed sets for O(1) lookup instead of O(n)
+        if line == 'L1':
+            return self.simulation_date in self.l1_outages
+        elif line == 'L2':
+            return self.simulation_date in self.l2_outages
+        return False
     
     def calculate_projected_thickness(self, spool_idx, relative_quadrant, noh):
         current_thickness = self.thickness_array[spool_idx, relative_quadrant - 1]
@@ -72,25 +78,26 @@ class LDPMaintenanceEnv:
         wear = (self.erosion_rate[relative_quadrant - 1] - noise) * noh / 1000
         return current_thickness - wear
     
-    def is_failure(self, spool_idx, relative_quad, noh):
-        projected_thickness = self.calculate_projected_thickness(spool_idx, relative_quad, noh)
+    def is_failure(self, spool_idx, relative_quad):
+        # Use current thickness (after daily wear has been applied)
+        current_thickness = self.thickness_array[spool_idx, relative_quad - 1]
         
         if relative_quad == 1:
-            prob = self.top_failure_prob_func(projected_thickness)
+            prob = self.top_failure_prob_func(current_thickness)
         elif relative_quad in [2, 4]:
-            prob = self.left_right_failure_prob_func(projected_thickness)
+            prob = self.left_right_failure_prob_func(current_thickness)
         else:
-            prob = self.bottom_failure_prob_func(projected_thickness)
+            prob = self.bottom_failure_prob_func(current_thickness)
         
         return prob > random.random()
         
-    def simulate_failure(self, noh):
-        self.failures = set()
+    def simulate_failure(self):
+        # Don't clear existing failures - they persist until resolved
         reward = 0
         
         for spool_idx in range(len(self.spools)):
             for quadrant in range(1, 5):
-                if self.is_failure(spool_idx, quadrant, noh):
+                if self.is_failure(spool_idx, quadrant):
                     spool = self.spools[spool_idx]
                     if spool not in self.failures:
                         reward += self.apply_failure(spool)
@@ -154,8 +161,8 @@ class LDPMaintenanceEnv:
                 for spool in self.spools:
                     if '2' in spool and spool not in valid_spools and spool not in self.failures:
                         valid_spools.append(spool)
-
-        self.failures = set()
+        
+        # Don't clear failures here - they should persist until resolved
         
         return valid_spools
 
@@ -177,18 +184,41 @@ class LDPMaintenanceEnv:
         elif len(self.failures) == 1:
             failed_spool = list(self.failures)[0]
             if '1' in failed_spool:
-                other_line_outage = self.outage_schedule['L2 outage list']
+                # Check if L2 is in outage using fast lookup
+                if self.simulation_date in self.l2_outages:
+                    if self.simulation_date.month in [4,5,6,7,8,9,10,11]:
+                        return -5000000
+                    elif self.simulation_date.month in [1,2,3,12]:
+                        return -9800000
             elif '2' in failed_spool:
-                other_line_outage = self.outage_schedule['L1 outage list']
-            else:
-                return 0
-                
-            if self.simulation_date in other_line_outage.values:
-                if self.simulation_date.month in [4,5,6,7,8,9,10,11]:
-                    return -5000000
-                elif self.simulation_date.month in [1,2,3,12]:
-                    return -9800000
+                # Check if L1 is in outage using fast lookup
+                if self.simulation_date in self.l1_outages:
+                    if self.simulation_date.month in [4,5,6,7,8,9,10,11]:
+                        return -5000000
+                    elif self.simulation_date.month in [1,2,3,12]:
+                        return -9800000
         return 0
+    
+    def apply_daily_wear(self, noh):
+        """Apply daily thickness reduction due to erosion/wear"""
+        for spool_idx in range(len(self.spools)):
+            for relative_quadrant in range(1, 5):  # 1-4 for quadrants
+                quadrant_idx = relative_quadrant - 1  # 0-3 for array indexing
+                
+                # Add noise based on quadrant position (same as in calculate_projected_thickness)
+                if relative_quadrant == 1:  # top
+                    noise = random.uniform(-0.5, 0.5)
+                elif relative_quadrant in [2, 4]:  # left/right
+                    noise = random.uniform(-0.8, 0.8)
+                else:  # bottom (quadrant 3)
+                    noise = random.uniform(-3, 1.5)
+                
+                # Calculate wear for this day
+                wear = (self.erosion_rate[relative_quadrant - 1] - noise) * noh / 1000
+                
+                # Apply wear (reduce thickness) but don't go below 0
+                self.thickness_array[spool_idx, quadrant_idx] = max(0, 
+                    self.thickness_array[spool_idx, quadrant_idx] - wear)
     
     def step(self, actions):
         reward = 0
@@ -199,8 +229,11 @@ class LDPMaintenanceEnv:
         # Calculate NOH (Net Operating Hours) for the day
         noh = 24 * 0.8  # 80% uptime as specified in assumptions
         
+        # Apply daily wear/erosion to all spools
+        self.apply_daily_wear(noh)
+        
         # Simulate failures
-        failure_reward = self.simulate_failure(noh)
+        failure_reward = self.simulate_failure()
         reward += failure_reward
         
         # Apply both-lines-down penalty
@@ -214,6 +247,8 @@ class LDPMaintenanceEnv:
         for spool, action in actions.items():
             if spool in valid_actions and action != 0:  # 0 = do nothing
                 reward += self.apply_action(spool, action)
+
+        self.failures = set()
         
         # Update total reward
         self.total_reward += reward
